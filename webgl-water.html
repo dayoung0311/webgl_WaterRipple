@@ -1,0 +1,458 @@
+<!--
+WebGL Water (tuned)
+원본: https://madebyevan.com/webgl-water/
+지금 버전: 색을 더 맑게 + 파동 왜곡을 좀 더 강하게 + 벽을 더 밝게
+-->
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>WebGL Water – clear & gentle</title>
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no">
+
+    <!-- ==============================
+         1. 물 시뮬레이션용 셰이더
+         ============================== -->
+    <script id="water-vertex" type="x-shader/x-vertex">
+      varying vec2 coord;
+      void main() {
+        coord = gl_Vertex.xy * 0.5 + 0.5;
+        gl_Position = vec4(gl_Vertex.xyz, 1.0);
+      }
+    </script>
+
+    <!-- 드롭이 떨어질 때 수면에 자국 내기 -->
+   <!-- webgl-water.html 안의 이 블록만 교체 -->
+<script id="water-drop-fragment" type="x-shader/x-fragment">
+uniform sampler2D texture;
+uniform vec2 center;
+uniform float radius;
+uniform float strength;
+varying vec2 coord;
+
+void main() {
+  vec4 info = texture2D(texture, coord);
+
+  // 정규화 거리 (좌표계 동일)
+  float d = length(center * 0.5 + 0.5 - coord) / max(radius, 1e-4);
+
+  // ★ 순수 가우시안 한 번만: 드롭은 '점'만 찍는다. (+/− 부호는 strength로 결정)
+  float drop = exp(-d*d*12.0); // (σ≈0.29 근사)
+
+  info.r += strength * drop;
+  gl_FragColor = info;
+}
+</script>
+    <!-- 파동 업데이트 (wave eq.) -->
+    <script id="water-update-fragment" type="x-shader/x-fragment">
+      uniform sampler2D texture;
+      uniform vec2 delta;
+      varying vec2 coord;
+      void main() {
+        vec4 info = texture2D(texture, coord);
+
+        vec2 dx = vec2(delta.x, 0.0);
+        vec2 dy = vec2(0.0, delta.y);
+
+        float average = (
+          texture2D(texture, coord - dx).r +
+          texture2D(texture, coord + dx).r +
+          texture2D(texture, coord - dy).r +
+          texture2D(texture, coord + dy).r
+        ) * 0.25;
+
+        // 살짝 더 탄성 있게
+        info.g += (average - info.r) * 1.0;
+        // 감쇠는 천천히
+        info.g *= 0.982;
+
+        info.r += info.g;
+        info.r *= 0.994;
+
+        gl_FragColor = info;
+      }
+    </script>
+
+    <!-- 높이 → 법선 -->
+    <script id="water-normal-fragment" type="x-shader/x-fragment">
+      uniform sampler2D texture;
+      uniform vec2 delta;
+      varying vec2 coord;
+      void main() {
+        vec4 info = texture2D(texture, coord);
+        vec3 dx = vec3(delta.x,
+                       texture2D(texture, vec2(coord.x + delta.x, coord.y)).r - info.r,
+                       0.0);
+        vec3 dy = vec3(0.0,
+                       texture2D(texture, vec2(coord.x, coord.y + delta.y)).r - info.r,
+                       delta.y);
+
+        // 법선 좀 더 세게 해서 파동이 잘 보이도록
+        vec3 n = normalize(cross(dy, dx));
+        info.ba = n.xz;
+        gl_FragColor = info;
+      }
+    </script>
+
+    <!-- 움직이는 구(원본 데모용) -->
+    <script id="water-sphere-fragment" type="x-shader/x-fragment">
+      uniform sampler2D texture;
+      uniform vec3 oldCenter;
+      uniform vec3 newCenter;
+      uniform float radius;
+      varying vec2 coord;
+
+      float volumeInSphere(vec3 center) {
+        vec3 toCenter = vec3(coord.x * 2.0 - 1.0, 0.0, coord.y * 2.0 - 1.0) - center;
+        float t = length(toCenter) / radius;
+        float dy = exp(-pow(t * 1.5, 6.0));
+        float ymin = min(0.0, center.y - dy);
+        float ymax = min(max(0.0, center.y + dy), ymin + 2.0 * dy);
+        return (ymax - ymin) * 0.1;
+      }
+
+      void main() {
+        vec4 info = texture2D(texture, coord);
+        info.r += volumeInSphere(oldCenter);
+        info.r -= volumeInSphere(newCenter);
+        gl_FragColor = info;
+      }
+    </script>
+
+    <!-- ==============================
+         2. 렌더링 헬퍼
+         ============================== -->
+    <script id="helper-functions" type="x-shader/x-fragment">
+      precision highp float;
+
+      const float IOR_AIR   = 1.0;
+      const float IOR_WATER = 1.333;
+
+      // 💧 더 맑고 하늘색에 가까운 물
+      const vec3 abovewaterColor = vec3(0.80, 0.96, 1.0);
+      const vec3 underwaterColor = vec3(0.74, 0.90, 1.02);
+
+      // 수조 높이
+      const float poolHeight = 0.5;
+
+      uniform vec3 light;
+      uniform vec3 sphereCenter;
+      uniform float sphereRadius;
+      uniform sampler2D tiles;
+      uniform sampler2D causticTex;
+      uniform sampler2D water;
+
+      vec2 intersectCube(vec3 origin, vec3 ray, vec3 cubeMin, vec3 cubeMax) {
+        vec3 tMin = (cubeMin - origin) / ray;
+        vec3 tMax = (cubeMax - origin) / ray;
+        vec3 t1 = min(tMin, tMax);
+        vec3 t2 = max(tMin, tMax);
+        float tNear = max(max(t1.x, t1.y), t1.z);
+        float tFar  = min(min(t2.x, t2.y), t2.z);
+        return vec2(tNear, tFar);
+      }
+
+      float intersectSphere(vec3 origin, vec3 ray, vec3 center, float radius) {
+        vec3 toSphere = origin - center;
+        float b = dot(toSphere, ray);
+        float c = dot(toSphere, toSphere) - radius * radius;
+        float h = b*b - c;
+        if (h < 0.0) return 1.0e6;
+        h = sqrt(h);
+        float t = -b - h;
+        return (t > 0.0) ? t : 1.0e6;
+      }
+
+      vec3 getSphereColor(vec3 point) {
+        return vec3(0.5);
+      }
+
+      // ✅ 벽을 거의 하얗게 해서 물만 눈에 띄게
+      vec3 getWallColor(vec3 point) {
+        vec3 wallColor = vec3(0.93, 0.97, 1.0);
+        vec3 normal;
+
+        if (abs(point.x) > 0.999)       normal = vec3(-point.x, 0.0, 0.0);
+        else if (abs(point.z) > 0.999)  normal = vec3(0.0, 0.0, -point.z);
+        else                            normal = vec3(0.0, 1.0, 0.0);
+
+        vec3 L = normalize(-light);
+        float diffuse = max(0.0, dot(L, normal)) * 0.35;
+        float ambient = 0.45;
+
+        // 바닥에 caustics
+        vec4 info = texture2D(water, point.xz * 0.5 + 0.5);
+        if (point.y < info.r) {
+          vec4 c = texture2D(causticTex,
+            0.75 * (point.xz - L.xz * point.y / max(L.y, 0.1)) * 0.5 + 0.5);
+          diffuse += c.r * 0.55;
+        }
+
+        return wallColor * (ambient + diffuse);
+      }
+    </script>
+
+    <!-- ==============================
+         3. 수면 렌더링
+         ============================== -->
+    <script id="water-surface-vertex" type="x-shader/x-vertex">
+      uniform sampler2D water;
+      varying vec3 position;
+      void main() {
+        vec4 info = texture2D(water, gl_Vertex.xy * 0.5 + 0.5);
+        position = gl_Vertex.xzy;
+        position.y += info.r;
+        gl_Position = gl_ModelViewProjectionMatrix * vec4(position, 1.0);
+      }
+    </script>
+
+    <!-- 물 위에서 보는 수면 -->
+    <script id="water-surface-abovewater-fragment" type="x-shader/x-fragment">
+      precision highp float;
+      uniform vec3 eye;
+      varying vec3 position;
+      uniform samplerCube sky;
+
+      vec3 getSurfaceRayColor(vec3 origin, vec3 ray, vec3 waterColor) {
+        vec3 color;
+        float q = intersectSphere(origin, ray, sphereCenter, sphereRadius);
+        if (q < 1.0e6) {
+          color = getSphereColor(origin + ray * q);
+        } else if (ray.y < 0.0) {
+          vec2 t = intersectCube(origin, ray,
+            vec3(-1.0, -poolHeight, -1.0),
+            vec3(1.0, 2.0, 1.0));
+          color = getWallColor(origin + ray * t.y);
+        } else {
+          // 위쪽 → 하늘
+          color = textureCube(sky, ray).rgb;
+          // 살짝 더 밝게
+          color = mix(color, vec3(0.95, 1.0, 1.0), 0.25);
+        }
+
+        if (ray.y < 0.0)
+          color = mix(color, color * waterColor, 0.15);
+        return color;
+      }
+
+      void main() {
+        // ===== 파동을 더 잘 보이게: 좌표를 여러 번 왜곡 =====
+        vec2 coord = position.xz * 0.5 + 0.5;
+        vec4 info = texture2D(water, coord);
+        for (int i = 0; i < 3; i++) {
+          coord += info.ba * 0.009;
+          info = texture2D(water, coord);
+        }
+
+        // 법선 뾰족하게
+        vec3 normal = vec3(
+        info.b * 1.3,
+        sqrt(max(0.0, 1.0 - dot(info.ba * 1.3, info.ba * 1.3))),
+        info.a * 1.3
+      );
+        normal = normalize(normal);
+
+        vec3 incoming = normalize(position - eye);
+        vec3 reflected = reflect(incoming, normal);
+        vec3 refracted = refract(incoming, normal, IOR_AIR / IOR_WATER);
+
+        // 프레넬 살짝 과장 → 사진 느낌
+        float fresnel = mix(0.10, 1.0, pow(1.0 - dot(normal, -incoming), 3.0));
+
+        vec3 reflectedColor = getSurfaceRayColor(position, reflected, abovewaterColor);
+        vec3 refractedColor = getSurfaceRayColor(position, refracted, abovewaterColor);
+
+        // 반사에 하늘색 섞기
+        reflectedColor = mix(reflectedColor, vec3(0.70, 0.87, 1.0), 0.28);
+
+        vec3 finalColor = mix(refractedColor, reflectedColor, fresnel);
+        finalColor = pow(finalColor, vec3(0.95));
+
+        gl_FragColor = vec4(finalColor, 1.0);
+      }
+    </script>
+
+    <!-- 물 아래에서 보는 수면 (원본 거의 유지) -->
+    <script id="water-surface-underwater-fragment" type="x-shader/x-fragment">
+      precision highp float;
+      uniform vec3 eye;
+      varying vec3 position;
+      uniform samplerCube sky;
+
+      vec3 getSurfaceRayColor(vec3 origin, vec3 ray, vec3 waterColor) {
+        vec3 color;
+        float q = intersectSphere(origin, ray, sphereCenter, sphereRadius);
+        if (q < 1.0e6) {
+          color = getSphereColor(origin + ray * q);
+        } else if (ray.y < 0.0) {
+          vec2 t = intersectCube(origin, ray,
+            vec3(-1.0, -poolHeight, -1.0),
+            vec3(1.0, 2.0, 1.0));
+          color = getWallColor(origin + ray * t.y);
+        } else {
+          color = textureCube(sky, ray).rgb;
+          color += vec3(pow(max(0.0, dot(light, ray)), 300.0)) * vec3(8.0,7.0,5.0);
+        }
+        if (ray.y < 0.0)
+          color = mix(color, color * waterColor, 0.15);
+        return color;
+      }
+
+      void main() {
+        vec2 coord = position.xz * 0.5 + 0.5;
+        vec4 info = texture2D(water, coord);
+        for (int i = 0; i < 5; i++) {
+          coord += info.ba * 0.005;
+          info = texture2D(water, coord);
+        }
+        vec3 normal = vec3(info.b,
+                           sqrt(max(0.0, 1.0 - dot(info.ba, info.ba))),
+                           info.a);
+        vec3 incoming = normalize(position - eye);
+        normal = -normal;
+        vec3 reflected = reflect(incoming, normal);
+        vec3 refracted = refract(incoming, normal, IOR_WATER / IOR_AIR);
+        float fresnel = mix(0.5, 1.0, pow(1.0 - dot(normal, -incoming), 3.0));
+        vec3 reflectedColor = getSurfaceRayColor(position, reflected, underwaterColor);
+        vec3 refractedColor = getSurfaceRayColor(position, refracted, vec3(1.0)) * vec3(0.8, 1.0, 1.1);
+        gl_FragColor = vec4(mix(reflectedColor, refractedColor, (1.0 - fresnel)), 1.0);
+      }
+    </script>
+
+    <!-- 구(안 써도 되지만 원본 구조 유지) -->
+    <script id="sphere-vertex" type="x-shader/x-vertex">
+      varying vec3 position;
+      void main() {
+        position = sphereCenter + gl_Vertex.xyz * sphereRadius;
+        gl_Position = gl_ModelViewProjectionMatrix * vec4(position, 1.0);
+      }
+    </script>
+    <script id="sphere-fragment" type="x-shader/x-fragment">
+      varying vec3 position;
+      void main() {
+        gl_FragColor = vec4(getSphereColor(position), 1.0);
+        vec4 info = texture2D(water, position.xz * 0.5 + 0.5);
+        if (position.y < info.r) {
+          gl_FragColor.rgb *= underwaterColor * 1.2;
+        }
+      }
+    </script>
+
+    <!-- 풀 벽 -->
+    <script id="cube-vertex" type="x-shader/x-vertex">
+      varying vec3 position;
+      void main() {
+        position = gl_Vertex.xyz;
+        position.y = ((1.0 - position.y) * (7.0 / 12.0) - 1.0) * poolHeight;
+        gl_Position = gl_ModelViewProjectionMatrix * vec4(position, 1.0);
+      }
+    </script>
+    <script id="cube-fragment" type="x-shader/x-fragment">
+      varying vec3 position;
+      void main() {
+        // 약간 더 투명
+        gl_FragColor = vec4(getWallColor(position), 0.38);
+        vec4 info = texture2D(water, position.xz * 0.5 + 0.5);
+        if (position.y < info.r) {
+          gl_FragColor.rgb *= underwaterColor * 1.2;
+        }
+      }
+    </script>
+
+    <!-- 카우스틱스 -->
+    <script id="caustics-vertex" type="x-shader/x-vertex">
+      varying vec3 oldPos;
+      varying vec3 newPos;
+      varying vec3 ray;
+
+      vec3 project(vec3 origin, vec3 ray, vec3 refractedLight) {
+        vec2 tcube = intersectCube(origin, ray, vec3(-1.0, -poolHeight, -1.0), vec3(1.0, 2.0, 1.0));
+        origin += ray * tcube.y;
+        float tplane = (-origin.y - 1.0) / refractedLight.y;
+        return origin + refractedLight * tplane;
+      }
+
+      void main() {
+        vec4 info = texture2D(water, gl_Vertex.xy * 0.5 + 0.5);
+        info.ba *= 0.8;
+        vec3 normal = vec3(info.b,
+                           sqrt(max(0.0, 1.0 - dot(info.ba, info.ba))),
+                           info.a);
+        vec3 refractedLight = refract(-light, vec3(0.0, 1.0, 0.0), IOR_AIR / IOR_WATER);
+        ray = refract(-light, normal, IOR_AIR / IOR_WATER);
+        oldPos = project(gl_Vertex.xzy, refractedLight, refractedLight);
+        newPos = project(gl_Vertex.xzy + vec3(0.0, info.r, 0.0), ray, refractedLight);
+        gl_Position = vec4(0.75 * (newPos.xz + refractedLight.xz / refractedLight.y), 0.0, 1.0);
+      }
+    </script>
+    <script id="caustics-fragment" type="x-shader/x-fragment">
+      varying vec3 oldPos;
+      varying vec3 newPos;
+      varying vec3 ray;
+      void main() {
+        gl_FragColor = vec4(0.08, 1.0, 0.0, 0.0);
+      }
+    </script>
+    <script id="caustics-fragment-derivatives" type="x-shader/x-fragment">
+      #extension GL_OES_standard_derivatives : enable
+      varying vec3 oldPos;
+      varying vec3 newPos;
+      varying vec3 ray;
+      void main() {
+        float oldArea = length(dFdx(oldPos)) * length(dFdy(oldPos));
+        float newArea = length(dFdx(newPos)) * length(dFdy(newPos));
+        gl_FragColor = vec4(oldArea / newArea * 0.08, 1.0, 0.0, 0.0);
+      }
+    </script>
+
+    <!-- 폴리필 + lightgl + main -->
+    <script src="OES_texture_float_linear-polyfill.js"></script>
+    <script src="lightgl.js"></script>
+    <script src="main.js"></script>
+
+    <style>
+      body { font: 13px/140% Arial, sans-serif; background: #d0d8e0; color: #333; overflow: hidden; margin: 0; }
+      canvas { position: absolute; top: 0; left: 0; }
+      #loading {
+        position: absolute; left: 0; right: 0; top: 50%; text-align: center;
+        transform: translateY(-50%);
+      }
+      #randBtn {
+        position: absolute; top: 16px; left: 16px; z-index: 10;
+        padding: 8px 12px; border: 0; border-radius: 8px;
+        background: rgba(255,255,255,0.9);
+        color: #333; font-weight: 600;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+        cursor: pointer;
+      }
+      #randBtn.off { opacity: .5; }
+      img { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="loading">Loading...</div>
+    <button id="randBtn">Random Drops: On</button>
+    <img id="tiles">
+    <img id="xneg"><img id="xpos">
+    <img id="yneg"><img id="ypos"><img id="zneg"><img id="zpos">
+    <script>
+      // 아주 간단한 단색 텍스처로 채움
+      (function(){
+        function solid(w,h,r,g,b,a){
+          var c=document.createElement('canvas'); c.width=w; c.height=h;
+          var ctx=c.getContext('2d');
+          ctx.fillStyle='rgba('+r+','+g+','+b+','+(a==null?1:a)+')';
+          ctx.fillRect(0,0,w,h);
+          return c.toDataURL('image/png');
+        }
+        var sky  = solid(512,512, 182,228,255,1);
+        var wall = solid(512,512, 236,242,247,1);
+        ['xneg','xpos','ypos','zneg','zpos'].forEach(function(id){
+          document.getElementById(id).src = sky;
+        });
+        document.getElementById('tiles').src = wall;
+      })();
+    </script>
+  </body>
+</html>
