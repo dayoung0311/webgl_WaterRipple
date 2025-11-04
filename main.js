@@ -6,7 +6,7 @@ var gl = GL.create();
 var gTime = 0.0;
 
 const IMPACT = {
-  SLOW: 2.4, // 전체 템포
+  SLOW: 2.2, // 전체 템포
 
   // 왕관/공동
   crownR: 0.050, crownW: 0.018, crownAmp: 0.038,
@@ -196,13 +196,6 @@ function Renderer() {
   this.dropletMeshRound = GL.Mesh.sphere({detail:24, normals:true});
   this.dropletMeshRound.compile();
 
-  // 바닥 그림자
-  this.dropletShadowMesh = GL.Mesh.plane({detail:1});
-  this.dropletShadowShader = new GL.Shader(
-    'varying vec2 vUV; void main(){ vUV=gl_Vertex.xy*0.5+0.5; gl_Position=gl_ModelViewProjectionMatrix*gl_Vertex; }',
-    'precision mediump float; varying vec2 vUV; uniform vec4 color; void main(){ float d=length(vUV-0.5); float a=smoothstep(0.55,0.0,d); gl_FragColor=vec4(color.rgb,color.a*a); }'
-  );
-
   // 물 재질
   this.waterMaterialShader = new GL.Shader(
     'varying vec3 vN; varying vec3 vE; void main(){ vN=normalize(gl_NormalMatrix*gl_Normal); vec4 ep=gl_ModelViewMatrix*gl_Vertex; vE=ep.xyz; gl_Position=gl_ModelViewProjectionMatrix*gl_Vertex; }',
@@ -226,7 +219,7 @@ function Renderer() {
       ' gl_FragColor=vec4(pow(col,vec3(0.95)), baseColor.a); }'
     ].join('\n')
   );
-  // === Falling Droplet shader (reflection/refraction + Fresnel) ===
+  // 떨어지는 물방울
   this.fallingDropletShader = new GL.Shader(
       // === Vertex Shader ===
       'varying vec3 vN; varying vec3 vE;' +
@@ -283,9 +276,7 @@ function Renderer() {
       // 투명도: 물빛 (0.55~0.7 권장)
       '  gl_FragColor = vec4(col, 0.65);' +
       '}'
-) ;
-
-
+    ) ;
 }
 
 Renderer.prototype.updateCaustics = function(water){
@@ -328,28 +319,18 @@ Renderer.prototype.renderCube = function(){
   gl.disable(gl.CULL_FACE);
 };
 
-Renderer.prototype.renderDroplets = function(droplets, sky){
-  if(!droplets || droplets.length===0) return;
+Renderer.prototype.renderDroplets = function (droplets, sky) {
+  if (!droplets || droplets.length === 0) return;
 
   gl.enable(gl.DEPTH_TEST);
-  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.enable(gl.BLEND);                     // ★ 전체 루프 동안 블렌딩 유지
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-  for (var i=0;i<droplets.length;i++){
-    var d=droplets[i]; if(d.dead) continue;
+  for (var i = 0; i < droplets.length; i++) {
+    var d = droplets[i];
+    if (d.dead) continue;
 
-    // 바닥 그림자
-    var h=Math.max(d.position.y,0.0);
-    var shadowSize=0.15+h*0.25;
-    var shadowAlpha=0.35*Math.exp(-h*1.6);
-
-    gl.pushMatrix();
-    gl.translate(d.position.x, 0.002, d.position.z);
-    gl.rotate(-90,1,0,0);
-    gl.scale(shadowSize, shadowSize, shadowSize);
-    this.dropletShadowShader.uniforms({ color:[0,0,0,shadowAlpha] }).draw(this.dropletShadowMesh);
-    gl.popMatrix();
-
-    // 물체
+    //  Droplet 본체 ===
     gl.pushMatrix();
     gl.translate(d.position.x, d.position.y, d.position.z);
 
@@ -360,21 +341,24 @@ Renderer.prototype.renderDroplets = function(droplets, sky){
 
     sky.bind(0);
     var a = (d.alpha !== undefined ? d.alpha : 0.50);
-   if (d.isTip) {
-     // 팁 방울: 기존 메터리얼(구형) 그대로
+
+    if (d.isTip) {
+      // 팁 방울: 기존 물 셰이더
       this.waterMaterialShader.uniforms({
-        sky:0, lightDir:this.lightDir, baseColor:[0.90,0.97,1.0,a]
+        sky: 0, lightDir: this.lightDir, baseColor: [0.90, 0.97, 1.0, a]
       }).draw(this.dropletMeshRound);
     } else {
-      // ⬅⬅ 낙하(처음) 물방울: 반사/굴절+Fresnel 전용 셰이더 사용
-     this.fallingDropletShader.uniforms({
-        sky:0, lightDir:this.lightDir, height: Math.max(d.position.y,0.0)
-     }).draw(this.dropletMeshSpout);    }
+      // 낙하(처음) 물방울: 전용 셰이더
+      this.fallingDropletShader.uniforms({
+        sky: 0, lightDir: this.lightDir, height: Math.max(d.position.y, 0.0)
+      }).draw(this.dropletMeshSpout);
+    }
     gl.popMatrix();
   }
 
-  gl.disable(gl.BLEND);
+  gl.disable(gl.BLEND);               
 };
+
 
 // ----------------------------------------------------------------------------
 // Crown → Cavity 유지 → Neck → Jet(초소형+보상) → Brake → Settle
@@ -404,11 +388,11 @@ CrownSequence.prototype.update = function(dt){
   }
 
   // neck 핀치: 제트 직전 1회
-if (!this.didNeck && t > 0.45*S && t <= 0.6*S) {
-  this.didNeck = true;
- addDropSoft(water, this.x, this.z, IMPACT.neckNearR, IMPACT.neckNearA);
- addDropSoft(water, this.x, this.z, IMPACT.neckCoreR, IMPACT.neckCoreA);
-}
+  if (!this.didNeck && t > 0.45*S && t <= 0.6*S) {
+    this.didNeck = true;
+    addDropSoft(water, this.x, this.z, IMPACT.neckNearR, IMPACT.neckNearA);
+    addDropSoft(water, this.x, this.z, IMPACT.neckCoreR, IMPACT.neckCoreA);
+  }
 
 
   // 제트: 가늘고 높게 솟음
@@ -503,28 +487,24 @@ TipDrop.prototype.update = function (dt, globalTime) {
     this.rippleTimer = 0;
   }
 
-  // 0.05초 → 0.09초 (빈도 감소), 반경을 0.024~0.034로 넓힘(저주파화)
-if (this.hasStartedRipples && !this.dead) {
-  this.rippleTimer += dt;
-  if (this.rippleTimer > 0.09) {
-    this.rippleTimer = 0;
-    let radius   = 0.024 + Math.random()*0.010;
-    let strength = 0.0035 + Math.random()*0.0025;
-    addRingDoGSoft(water, this.x, this.z, radius, radius*0.6, -strength);
+    // 0.05초 → 0.09초 (빈도 감소), 반경을 0.024~0.034로 넓힘(저주파화)
+  if (this.hasStartedRipples && !this.dead) {
+    this.rippleTimer += dt;
+    if (this.rippleTimer > 0.09) {
+      this.rippleTimer = 0;
+      let radius   = 0.024 + Math.random()*0.010;
+      let strength = 0.0035 + Math.random()*0.0025;
+      addRingDoGSoft(water, this.x, this.z, radius, radius*0.6, -strength);
+    }
+  }
+    if (this.position.y <= 0.0) {
+    let impact = Math.min(0.008 + Math.abs(this.velocity.y)*0.015, 0.02);
+    let rad = 0.026 + Math.random()*0.006;
+    addRingDoGSoft(water, this.x, this.z, rad, rad*0.7, -impact);
+    addDropSoft(water, this.x, this.z, rad*0.6, -impact*0.8);
+    this.dead = true;
   }
 }
-
-
-  if (this.position.y <= 0.0) {
-  let impact = Math.min(0.008 + Math.abs(this.velocity.y)*0.015, 0.02);
-  let rad = 0.026 + Math.random()*0.006;
-  addRingDoGSoft(water, this.x, this.z, rad, rad*0.7, -impact);
-  addDropSoft(water, this.x, this.z, rad*0.6, -impact*0.8);
-  this.dead = true;
-}
-
-}
-
 };
 
 // ----------------------------------------------------------------------------
