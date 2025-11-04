@@ -130,7 +130,7 @@ function Renderer() {
     minFilter: gl.LINEAR_MIPMAP_LINEAR, wrap: gl.REPEAT, format: gl.RGB
   });
 
-  this.lightDir  = new GL.Vector(0.2,-1.0,0.15).unit();
+  this.lightDir  = new GL.Vector(-0.001,-1.0,-0.001).unit();
   this.waterMesh = GL.Mesh.plane({detail:200});
 
   var helper = document.getElementById('helper-functions').text;
