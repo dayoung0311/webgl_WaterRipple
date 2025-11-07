@@ -121,7 +121,8 @@ Water.prototype.addColor = function(x, z, color, radius) {
       texture: 0,
       center: [x * 0.5 + 0.5, z * 0.5 + 0.5],
       color: color,
-      radius: radius
+      radius: radius,
+      time: gTime || 0.0
     }).draw(self.plane);
   });
   this.colorTextureB.swapWith(this.colorTextureA);
@@ -134,7 +135,8 @@ Water.prototype.updateColorTexture = function() {
       texture: 0,
       center: [-1.0, -1.0],
       color: [0.0, 0.0, 0.0],
-      radius: 0.0001, decay: 0.99
+      radius: 0.0001, decay: 0.99,
+      time: gTime || 0.0
     }).draw(self.plane);
   });
   this.colorTextureB.swapWith(this.colorTextureA);
@@ -184,7 +186,7 @@ function Renderer() {
   ];
 
   // ✅ sky 큐브맵을 두 water shader에 전달
-    this.waterShaders[0].uniforms.sky = this.cubemap;
+  this.waterShaders[0].uniforms.sky = this.cubemap;
   this.waterShaders[1].uniforms.sky = this.cubemap;
 
   this.cubeMesh = GL.Mesh.cube();
@@ -284,7 +286,7 @@ function Renderer() {
       '  vec3 waterTint = mix(baseColor.rgb, vec3(0.92,0.97,1.00), 0.75);' +
       '  vec3 baseMix   = mix(refrCol, waterTint, 0.18 + 0.20*topAmt);' +
       '  vec3 col       = mix(baseMix, refCol, fres * 0.55);' +
-      'col = mix(col, baseColor.rgb, 0.6);'+
+      'col = mix(col, baseColor.rgb, 0.3);'+
       '  vec3 H = normalize(V + L);' +
       '  float spec = pow(max(dot(N,H), 0.0), 180.0);' +
       '  col += vec3(1.0,0.98,0.95) * spec * 1.05;' +
@@ -297,7 +299,7 @@ function Renderer() {
       '  col += vec3(0.12, 0.15, 0.18) * fwd * 0.25;' +
       '  float absorb = clamp(0.05 + 0.15 * exp(-height * 6.0), 0.05, 0.20);' +
       '  col *= (1.0 - absorb);' +
-      '  gl_FragColor = vec4(pow(col, vec3(0.95)), 0.62);' +
+      '  gl_FragColor = vec4(pow(col, vec3(0.95)), baseColor.a);' +
       '}'
   );
 
@@ -315,21 +317,33 @@ Renderer.prototype.updateCaustics = function(water){
   });
 };
 
-Renderer.prototype.renderWater = function(water, sky){
-  water.textureA.bind(0);
-  this.tileTexture.bind(1);
-  sky.bind(2);
-  this.causticTex.bind(3);
-  water.colorTextureA.bind(4);
+Renderer.prototype.renderWater = function(water, sky) {
+  // 🎯 1️⃣ 텍스처 슬롯 정확히 지정
+  water.textureA.bind(0);        // 수면 높이 맵
+  this.tileTexture.bind(1);      // 타일 무늬
+  sky.bind(2);                   // 큐브맵 (하늘)
+  this.causticTex.bind(3);       // 카우스틱 효과
+  water.colorTextureA.bind(4);   // ✅ 감정 색상 텍스처
 
   gl.enable(gl.CULL_FACE);
-  for (var i=0;i<2;i++){
-    gl.cullFace(i? gl.BACK : gl.FRONT);
+
+  for (var i = 0; i < 2; i++) {
+    gl.cullFace(i ? gl.BACK : gl.FRONT);
+
+    // 🎯 2️⃣ waterColorTex uniform 정확히 전달
     this.waterShaders[i].uniforms({
-      light:this.lightDir, water:0, tiles:1, sky:2, causticTex:3,waterColorTex: 4,
-      eye:new GL.Raytracer().eye, sphereCenter:this.sphereCenter, sphereRadius:this.sphereRadius
+      light: this.lightDir,
+      water: 0,
+      tiles: 1,
+      sky: 2,
+      causticTex: 3,
+      waterColorTex: 4, // ✅ 이름 정확히 일치 (helper-functions와 동일해야 함)
+      eye: new GL.Raytracer().eye,
+      sphereCenter: this.sphereCenter,
+      sphereRadius: this.sphereRadius
     }).draw(this.waterMesh);
   }
+
   gl.disable(gl.CULL_FACE);
 };
 
@@ -375,7 +389,7 @@ Renderer.prototype.renderDroplets = function (droplets, sky) {
         sky: 0,
         lightDir: this.lightDir,
         height: Math.max(d.position.y, 0.0),
-        baseColor: [...(window.currentDropColor || [0.9, 0.97, 1.0]), 0.8], // ✅ 알파값 0.8 추가
+        baseColor: [...(window.currentDropColor || [0.9, 0.97, 0.4]), 0.4],
         eye: this.eye,
       }).draw(this.dropletMeshSpout);
     }
@@ -494,7 +508,7 @@ TipDrop.prototype.update = function (dt, globalTime) {
 function Droplet(x,z){
   this.position = new GL.Vector(x, 1.0, z);
   this.velocity = new GL.Vector(0, -0.8, 0);
-  this.radius   = 0.03;
+  this.radius   = 0.02;
   this.dead     = false;
 }
 
@@ -527,13 +541,14 @@ window.onload = function(){
   gl.clearColor(0.82,0.85,0.88,1.0);
 
   water = new Water();
-  document.addEventListener('click', function(e) {
+  let isDragging = false;
+  let dragMoved = false;
+  document.addEventListener('click', function (e) {
+    if (isDragging || dragMoved) return;  // 드래그 중에는 무시
     const rect = gl.canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-
-    // ✅ spawnDropletAtScreen() 사용 → 내부에서 x,z 계산됨
-    spawnDropletAtScreen(x, y, currentEmotion);
+    spawnDropletAtScreen(x, y, currentEmotion); // 💧 한 번만 생성
   });
 
   const buttons = document.querySelectorAll("#emotion-buttons button");
@@ -558,15 +573,42 @@ window.onload = function(){
   });
   renderer = new Renderer();
   renderer.cubemap = cubemap;
-  gl.canvas.onmousedown = function(e) {
+  gl.canvas.onmousedown = function (e) {
     e.preventDefault();
-    startDrag(e.pageX, e.pageY);
+    isDragging = true;
+    dragMoved = false;
+    oldX = e.pageX;
+    oldY = e.pageY;
+    mode = MODE_ORBIT;
   };
-  gl.canvas.onmousemove = function(e) {
-    duringDrag(e.pageX, e.pageY);
+
+  gl.canvas.onmousemove = function (e) {
+    if (!isDragging) return;
+
+    const dx = Math.abs(e.pageX - oldX);
+    const dy = Math.abs(e.pageY - oldY);
+    if (dx > 4 || dy > 4) dragMoved = true; // 일정 이상 움직이면 드래그로 간주
+
+    if (mode === MODE_ADD && dragMoved) {
+      const now = performance.now();
+      if (now - lastDropMs > 70) {
+        spawnDropletAtScreen(e.pageX, e.pageY, currentEmotion);
+        lastDropMs = now;
+      }
+    } else if (mode === MODE_ORBIT) {
+      angleY -= e.pageX - oldX;
+      angleX -= e.pageY - oldY;
+      angleX = Math.max(-89.999, Math.min(89.999, angleX));
+      oldX = e.pageX;
+      oldY = e.pageY;
+    }
   };
-  gl.canvas.onmouseup = function() {
-    stopDrag();
+
+  gl.canvas.onmouseup = function (e) {
+    e.preventDefault();
+
+    isDragging = false;
+    mode = -1;
   };
   if(!water.textureA.canDrawTo() || !water.textureB.canDrawTo())
     throw new Error('render-to-float textures not supported');
@@ -628,7 +670,7 @@ window.onload = function(){
 
     // 2️⃣ 감정 색상 결정 (기본 흰색 fallback)
     const color = EMOTION_COLORS[emotionKey] || [1.0, 1.0, 1.0];
-    const radius = 0.1; // ✅ radius 정의 추가
+    const radius = 0.12; // ✅ radius 정의 추가
 
     // 3️⃣ (선택) 경고 로그
     if (!EMOTION_COLORS[emotionKey]) {
@@ -643,19 +685,27 @@ window.onload = function(){
 
 
 
-  function startDrag(x,y){ oldX=x; oldY=y;  mode = (spawnDropletAtScreen(x, y, currentEmotion) ? MODE_ADD : MODE_ORBIT); }
-  function duringDrag(x,y){
-    if(mode===MODE_ADD){
-      if((typeof performance!=='undefined'?performance.now():Date.now())-lastDropMs>70){
-        spawnDropletAtScreen(x, y, currentEmotion);
-      }
-    } else if(mode===MODE_ORBIT){
-      angleY -= x-oldX; angleX -= y-oldY;
-      angleX = Math.max(-89.999, Math.min(89.999, angleX));
-      oldX=x; oldY=y;
-    }
-    if(paused) draw();
+  function startDrag(x,y){
+    oldX=x; oldY=y;
+    mode = MODE_ORBIT; // 클릭 시 자동 생성 안 함
   }
+
+  function duringDrag(x, y) {
+    if (mode === MODE_ADD) {
+      const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      if (now - lastDropMs > 70 && Math.abs(x - oldX) > 5) {  // ← 살짝 움직였을 때만
+        spawnDropletAtScreen(x, y, currentEmotion);
+        lastDropMs = now;
+      }
+    } else if (mode === MODE_ORBIT) {
+      angleY -= x - oldX;
+      angleX -= y - oldY;
+      angleX = Math.max(-89.999, Math.min(89.999, angleX));
+      oldX = x; oldY = y;
+    }
+    if (paused) draw();
+  }
+
   function stopDrag(){ mode=-1; }
   document.onmousedown=function(e){ e.preventDefault(); startDrag(e.pageX,e.pageY); };
   document.onmousemove=function(e){ duringDrag(e.pageX,e.pageY); };
