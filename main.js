@@ -81,7 +81,8 @@ function Water() {
   this.causticTex = new GL.Texture(512, 512, { type: gl.FLOAT });
   this.colorTexture = new GL.Texture(512, 512, { type: gl.FLOAT });
   // ✅ 추가: 색상 확산용 텍스처
-  this.colorTexture = new GL.Texture(512, 512, { type: gl.FLOAT });
+  this.colorTextureA = new GL.Texture(512, 512, { type: gl.FLOAT });
+  this.colorTextureB = new GL.Texture(512, 512, { type: gl.FLOAT });
   this.dropShader   = new GL.Shader('water-vertex','water-drop-fragment');
   this.updateShader = new GL.Shader('water-vertex','water-update-fragment');
   this.normalShader = new GL.Shader('water-vertex','water-normal-fragment');
@@ -112,18 +113,31 @@ Water.prototype.updateNormals = function(){
   });
   this.textureB.swapWith(this.textureA);
 };
-Water.prototype.addColor = function(x, y, color, radius) {
+Water.prototype.addColor = function(x, z, color, radius) {
   const self = this;
-  this.colorTexture.drawTo(function() {
-    // ✅ 텍스처 바인딩 후, uniform으로는 텍스처 유닛 번호(정수) 전달
-    self.colorTexture.bind(0);
+  this.colorTextureB.drawTo(function() {
+    self.colorTextureA.bind(0); // 읽기 전용
     self.colorShader.uniforms({
       texture: 0,
-      center: [x * 0.5 + 0.5, y * 0.5 + 0.5],
+      center: [x * 0.5 + 0.5, z * 0.5 + 0.5],
       color: color,
       radius: radius
     }).draw(self.plane);
   });
+  this.colorTextureB.swapWith(this.colorTextureA);
+};
+Water.prototype.updateColorTexture = function() {
+  const self = this;
+  this.colorTextureB.drawTo(function() {
+    self.colorTextureA.bind(0);
+    self.colorShader.uniforms({
+      texture: 0,
+      center: [-1.0, -1.0],
+      color: [0.0, 0.0, 0.0],
+      radius: 0.0001, decay: 0.99
+    }).draw(self.plane);
+  });
+  this.colorTextureB.swapWith(this.colorTextureA);
 };
 
 
@@ -306,12 +320,13 @@ Renderer.prototype.renderWater = function(water, sky){
   this.tileTexture.bind(1);
   sky.bind(2);
   this.causticTex.bind(3);
+  water.colorTextureA.bind(4);
 
   gl.enable(gl.CULL_FACE);
   for (var i=0;i<2;i++){
     gl.cullFace(i? gl.BACK : gl.FRONT);
     this.waterShaders[i].uniforms({
-      light:this.lightDir, water:0, tiles:1, sky:2, causticTex:3,
+      light:this.lightDir, water:0, tiles:1, sky:2, causticTex:3,waterColorTex: 4,
       eye:new GL.Raytracer().eye, sphereCenter:this.sphereCenter, sphereRadius:this.sphereRadius
     }).draw(this.waterMesh);
   }
@@ -360,7 +375,8 @@ Renderer.prototype.renderDroplets = function (droplets, sky) {
         sky: 0,
         lightDir: this.lightDir,
         height: Math.max(d.position.y, 0.0),
-        baseColor: [...(window.currentDropColor || [0.9, 0.97, 1.0]), 1.0]
+        baseColor: [...(window.currentDropColor || [0.9, 0.97, 1.0]), 0.8], // ✅ 알파값 0.8 추가
+        eye: this.eye,
       }).draw(this.dropletMeshSpout);
     }
     gl.popMatrix();
@@ -493,6 +509,8 @@ let currentDropColor = EMOTION_COLORS[currentEmotion];
 
 window.onload = function(){
   var ratio = window.devicePixelRatio || 1;
+  document.body.appendChild(gl.canvas);
+  gl.clearColor(0.82, 0.85, 0.88, 1.0);
 
   function onresize(){
     var W=innerWidth,H=innerHeight;
@@ -509,23 +527,15 @@ window.onload = function(){
   gl.clearColor(0.82,0.85,0.88,1.0);
 
   water = new Water();
-  renderer = new Renderer();
   document.addEventListener('click', function(e) {
     const rect = gl.canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
 
-    // [-1, 1] 좌표로 변환 (WebGL 좌표계)
-    const x = (e.clientX - rect.left) / rect.width * 2.0 - 1.0;
-    const y = 1.0 - (e.clientY - rect.top) / rect.height * 2.0;
-
-    // 랜덤 색상 생성 (물방울 색)
-    const color = [Math.random(), Math.random(), Math.random()];
-
-    // 반지름 (색 확산 범위)
-    const radius = 0.15;
-
-    // ✅ Water 클래스에 색상 추가
-    water.addColor(x, y, color, radius);
+    // ✅ spawnDropletAtScreen() 사용 → 내부에서 x,z 계산됨
+    spawnDropletAtScreen(x, y, currentEmotion);
   });
+
   const buttons = document.querySelectorAll("#emotion-buttons button");
   buttons.forEach(btn => {
     btn.addEventListener("click", () => {
@@ -538,7 +548,6 @@ window.onload = function(){
     });
   });
   window.currentDropColor = currentDropColor;
-  renderer.cubemap = cubemap;
   cubemap = new Cubemap({
     xneg: document.getElementById('xneg'),
     xpos: document.getElementById('xpos'),
@@ -547,7 +556,18 @@ window.onload = function(){
     zneg: document.getElementById('zneg'),
     zpos: document.getElementById('zpos')
   });
-
+  renderer = new Renderer();
+  renderer.cubemap = cubemap;
+  gl.canvas.onmousedown = function(e) {
+    e.preventDefault();
+    startDrag(e.pageX, e.pageY);
+  };
+  gl.canvas.onmousemove = function(e) {
+    duringDrag(e.pageX, e.pageY);
+  };
+  gl.canvas.onmouseup = function() {
+    stopDrag();
+  };
   if(!water.textureA.canDrawTo() || !water.textureB.canDrawTo())
     throw new Error('render-to-float textures not supported');
 
@@ -557,32 +577,77 @@ window.onload = function(){
   var RAF = window.requestAnimationFrame || window.webkitRequestAnimationFrame || function(cb){ setTimeout(cb,0); };
   var prev = new Date().getTime();
 
-  function animate(){
-    var now=new Date().getTime();
-    if(!paused){ update((now-prev)/1000); draw(); }
-    prev=now; RAF(animate);
-  }
-  RAF(animate);
-  window.onresize=onresize;
+  // --- 애니메이션 루프 (기존 animate 교체)
+  function animate() {
+    requestAnimationFrame(animate);
+    var now = Date.now();
+    var dt = (now - (animate.last || now)) / 1000.0;
+    animate.last = now;
 
-  // Interaction
-  var oldX,oldY,mode=-1,MODE_ADD=0,MODE_ORBIT=1,lastDropMs=0;
-  function spawnDropletAtScreen(x,y){
-    var tracer=new GL.Raytracer();
-    var ray=tracer.getRayForPixel(x*ratio,y*ratio);
-    var p=tracer.eye.add(ray.multiply(-tracer.eye.y/ray.y));
-    if(Math.abs(p.x)<1 && Math.abs(p.z)<1){
-      droplets.push(new Droplet(p.x,p.z));
-      lastDropMs=(typeof performance!=='undefined'?performance.now():Date.now());
+    // --- 물리 시뮬레이션 & droplet 갱신
+    update(dt);
+    water.updateColorTexture();
+    // --- 렌더링
+    draw();
+  }
+
+
+// 루프 시작
+  RAF(animate);
+  window.onresize = onresize;
+
+// Interaction
+  var oldX, oldY, mode = -1, MODE_ADD = 0, MODE_ORBIT = 1, lastDropMs = 0;
+
+  function spawnDropletAtScreen(x, y, emotionKey) {
+    console.log("📥 spawnDropletAtScreen triggered", x, y, emotionKey);
+
+    var tracer = new GL.Raytracer();
+    var ray = tracer.getRayForPixel(x * ratio, y * ratio);
+    var p = tracer.eye.add(ray.multiply(-tracer.eye.y / ray.y));
+
+    if (Math.abs(p.x) < 1 && Math.abs(p.z) < 1) {
+      // 물방울 생성
+      droplets.push(new Droplet(p.x, p.z));
+      console.log("💧 Droplet created at", p.x, p.z);
+      lastDropMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+      // ✅ 감정 색상 적용 + 물리 파동 생성
+      dropWater(p.x, p.z, emotionKey);
+
       return true;
     }
     return false;
   }
-  function startDrag(x,y){ oldX=x; oldY=y; mode = (spawnDropletAtScreen(x,y)? MODE_ADD: MODE_ORBIT); }
+
+
+// 새 함수 정의 (spawnDropletAtScreen 위나 아래 어느 쪽에도 가능)
+  function dropWater(x, z, emotionKey) {
+    // 1️⃣ 물리적 파동 먼저 생성
+    addCrownSplash(water, x, z, 0.05);
+
+    // 2️⃣ 감정 색상 결정 (기본 흰색 fallback)
+    const color = EMOTION_COLORS[emotionKey] || [1.0, 1.0, 1.0];
+    const radius = 0.1; // ✅ radius 정의 추가
+
+    // 3️⃣ (선택) 경고 로그
+    if (!EMOTION_COLORS[emotionKey]) {
+      console.warn(`⚠️ Unknown emotionKey "${emotionKey}". Using white fallback.`);
+    }
+
+    // 4️⃣ 5초 후 색상 추가 (지연 효과)
+    setTimeout(() => {
+      water.addColor(x, z, color, radius);
+    }, 475); // 5000ms = 5초 후 색 등장
+  }
+
+
+
+  function startDrag(x,y){ oldX=x; oldY=y;  mode = (spawnDropletAtScreen(x, y, currentEmotion) ? MODE_ADD : MODE_ORBIT); }
   function duringDrag(x,y){
     if(mode===MODE_ADD){
       if((typeof performance!=='undefined'?performance.now():Date.now())-lastDropMs>70){
-        spawnDropletAtScreen(x,y);
+        spawnDropletAtScreen(x, y, currentEmotion);
       }
     } else if(mode===MODE_ORBIT){
       angleY -= x-oldX; angleX -= y-oldY;

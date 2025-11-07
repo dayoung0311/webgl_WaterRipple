@@ -107,6 +107,7 @@
     uniform sampler2D causticTex;
     uniform sampler2D water;      // ✅ 추가 (필수)
     uniform samplerCube sky;      // ✅ sky도 명시적으로 추가
+    uniform sampler2D waterColorTex;
 
     vec2 intersectCube(vec3 origin, vec3 ray, vec3 cubeMin, vec3 cubeMax) {
       vec3 tMin = (cubeMin - origin) / ray;
@@ -166,6 +167,9 @@
         color = mix(color, vec3(0.95, 1.0, 1.0), 0.25);
       }
       if (ray.y < 0.0) color = mix(color, color * waterColor, 0.15);
+      vec4 emotional = texture2D(waterColorTex, origin.xz * 0.5 + 0.5);
+  color = mix(color, emotional.rgb, 0.25); // 25% 비율로 감정색 적용
+
       return color;
     }
   </script>
@@ -354,20 +358,33 @@
     img { display:none; }
   </style>
   <script id="water-color-fragment" type="x-shader/x-fragment">
+    precision highp float;
+
     uniform sampler2D texture;
     uniform vec2 center;
     uniform vec3 color;
     uniform float radius;
+    uniform float decay;
+
     varying vec2 coord;
 
     void main() {
       vec4 base = texture2D(texture, coord);
+
+      // 기존 색상에 감쇠율 적용
+      vec3 faded = base.rgb * decay;
+
+      // 새 색상 블렌딩
       float d = distance(coord, center);
-      float intensity = exp(-pow(d / radius, 2.0) * 8.0);
-      vec3 blended = mix(base.rgb, color, intensity);
-      gl_FragColor = vec4(blended, 1.0);
+      float blend = smoothstep(radius, 0.0, d);
+      vec3 result = mix(faded, color, blend);
+
+      gl_FragColor = vec4(result, 1.0);
     }
   </script>
+
+
+
 </head>
 <body>
 <div id="loading">Loading...</div>
