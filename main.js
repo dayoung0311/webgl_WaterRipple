@@ -3,6 +3,14 @@
 // ============================================================================
 
 var gl = GL.create({ alpha: false });
+// 감정 색상 정의 (RGB)
+const EMOTION_COLORS = {
+  JOY:      [1.0, 0.9, 0.2],   // 노란색
+  SAD:      [0.2, 0.4, 1.0],   // 파란색
+  ANGRY:    [1.0, 0.2, 0.2],   // 빨강색
+  ANXIETY:  [0.6, 0.2, 1.0],   // 보라색
+  CALM:     [0.2, 0.8, 0.4]    // 초록색
+};
 
 var gTime = 0.0;
 const TEXEL = 1.0 / 512.0;
@@ -69,10 +77,16 @@ function Water() {
     this.textureA = new GL.Texture(512,512,{type:gl.HALF_FLOAT_OES, filter});
     this.textureB = new GL.Texture(512,512,{type:gl.HALF_FLOAT_OES, filter});
   }
-
+  this.normalTexture = new GL.Texture(512, 512, { type: gl.FLOAT });
+  this.causticTex = new GL.Texture(512, 512, { type: gl.FLOAT });
+  this.colorTexture = new GL.Texture(512, 512, { type: gl.FLOAT });
+  // ✅ 추가: 색상 확산용 텍스처
+  this.colorTexture = new GL.Texture(512, 512, { type: gl.FLOAT });
   this.dropShader   = new GL.Shader('water-vertex','water-drop-fragment');
   this.updateShader = new GL.Shader('water-vertex','water-update-fragment');
   this.normalShader = new GL.Shader('water-vertex','water-normal-fragment');
+  this.colorShader = new GL.Shader('water-vertex', 'water-color-fragment');
+
 }
 Water.prototype.addDrop = function(x,y,r,str){
   var self=this;
@@ -98,6 +112,20 @@ Water.prototype.updateNormals = function(){
   });
   this.textureB.swapWith(this.textureA);
 };
+Water.prototype.addColor = function(x, y, color, radius) {
+  const self = this;
+  this.colorTexture.drawTo(function() {
+    // ✅ 텍스처 바인딩 후, uniform으로는 텍스처 유닛 번호(정수) 전달
+    self.colorTexture.bind(0);
+    self.colorShader.uniforms({
+      texture: 0,
+      center: [x * 0.5 + 0.5, y * 0.5 + 0.5],
+      color: color,
+      radius: radius
+    }).draw(self.plane);
+  });
+};
+
 
 // ----------------------------------------------------------------------------
 // Crown splash (impact)
@@ -135,22 +163,27 @@ function Renderer() {
 
   var helper = document.getElementById('helper-functions').text;
   this.waterShaders = [
-    new GL.Shader('water-surface-vertex', helper+'\n'+document.getElementById('water-surface-abovewater-fragment').text),
-    new GL.Shader('water-surface-vertex', helper+'\n'+document.getElementById('water-surface-underwater-fragment').text)
+    new GL.Shader('water-surface-vertex',
+        helper + '\n' + document.getElementById('water-surface-abovewater-fragment').text),
+    new GL.Shader('water-surface-vertex',
+        helper + '\n' + document.getElementById('water-surface-underwater-fragment').text)
   ];
+
+  // ✅ sky 큐브맵을 두 water shader에 전달
+    this.waterShaders[0].uniforms.sky = this.cubemap;
+  this.waterShaders[1].uniforms.sky = this.cubemap;
 
   this.cubeMesh = GL.Mesh.cube();
   this.cubeMesh.triangles.splice(4,2);
   this.cubeMesh.compile();
   this.cubeShader = new GL.Shader(helper+'\n'+document.getElementById('cube-vertex').text,
-                                  helper+'\n'+document.getElementById('cube-fragment').text);
+      helper+'\n'+document.getElementById('cube-fragment').text);
 
   var hasDeriv = !!gl.getExtension('OES_standard_derivatives');
   var cfragId  = hasDeriv ? 'caustics-fragment-derivatives' : 'caustics-fragment';
   this.causticsShader = new GL.Shader(helper+'\n'+document.getElementById('caustics-vertex').text,
-                                      helper+'\n'+document.getElementById(cfragId).text);
+      helper+'\n'+document.getElementById(cfragId).text);
   this.causticTex = new GL.Texture(1024,1024);
-
   this.sphereCenter = new GL.Vector();
   this.sphereRadius = 0.0;
 
@@ -179,78 +212,79 @@ function Renderer() {
 
   // water-like material for round tip
   this.waterMaterialShader = new GL.Shader(
-    'varying vec3 vN; varying vec3 vE; void main(){ vN=normalize(gl_NormalMatrix*gl_Normal); vec4 ep=gl_ModelViewMatrix*gl_Vertex; vE=ep.xyz; gl_Position=gl_ModelViewProjectionMatrix*gl_Vertex; }',
-    [
-      'precision highp float;',
-      'varying vec3 vN; varying vec3 vE;',
-      'uniform samplerCube sky; uniform vec3 lightDir; uniform vec4 baseColor;',
-      'const float IOR=1.333;',
-      'void main(){',
-      ' vec3 N=normalize(vN); vec3 V=normalize(-vE); vec3 L=normalize(-lightDir);',
-      ' vec3 R=reflect(-V,N); vec3 T=refract(-V,N,1.0/IOR);',
-      ' vec3 sky1=vec3(0.78,0.88,1.0), sky2=vec3(0.55,0.65,0.76), ground=vec3(0.08,0.10,0.12);',
-      ' vec3 refCol=textureCube(sky,R).rgb; vec3 refrCol=textureCube(sky,T).rgb; if(length(T)<0.001) refrCol=refCol;',
-      ' float ry=clamp(R.y*0.5+0.5,0.0,1.0); vec3 fakeRefl=mix(ground,mix(sky1,sky2,ry),ry); vec3 fakeRefr=mix(sky2,ground,ry);',
-      ' if(dot(refCol,refCol)<0.001) refCol=fakeRefl; if(dot(refrCol,refrCol)<0.001) refrCol=fakeRefr;',
-      ' float fres=pow(1.0-max(dot(N,V),0.0),3.0); float F=0.06+0.94*fres;',
-      ' vec3 env=mix(refrCol,refCol,F); vec3 H=normalize(V+L);',
-      ' float NdotL=max(dot(N,L),0.0); float spec=pow(max(dot(N,H),0.0),120.0);',
-      ' float horizon=abs(N.y); float band=smoothstep(0.18,0.05,horizon);',
-      ' vec3 col=mix(baseColor.rgb,env,0.85); col*=(0.85+0.15*NdotL); col=mix(col*0.55,col,1.0-band*0.5); col+=spec*vec3(1.25);',
-      ' gl_FragColor=vec4(pow(col,vec3(0.95)), baseColor.a); }'
-    ].join('\n')
+      'varying vec3 vN; varying vec3 vE; void main(){ vN=normalize(gl_NormalMatrix*gl_Normal); vec4 ep=gl_ModelViewMatrix*gl_Vertex; vE=ep.xyz; gl_Position=gl_ModelViewProjectionMatrix*gl_Vertex; }',
+      [
+        'precision highp float;',
+        'varying vec3 vN; varying vec3 vE;',
+        'uniform samplerCube sky; uniform vec3 lightDir; uniform vec4 baseColor;',
+        'const float IOR=1.333;',
+        'void main(){',
+        ' vec3 N=normalize(vN); vec3 V=normalize(-vE); vec3 L=normalize(-lightDir);',
+        ' vec3 R=reflect(-V,N); vec3 T=refract(-V,N,1.0/IOR);',
+        ' vec3 sky1=vec3(0.78,0.88,1.0), sky2=vec3(0.55,0.65,0.76), ground=vec3(0.08,0.10,0.12);',
+        ' vec3 refCol=textureCube(sky,R).rgb; vec3 refrCol=textureCube(sky,T).rgb; if(length(T)<0.001) refrCol=refCol;',
+        ' float ry=clamp(R.y*0.5+0.5,0.0,1.0); vec3 fakeRefl=mix(ground,mix(sky1,sky2,ry),ry); vec3 fakeRefr=mix(sky2,ground,ry);',
+        ' if(dot(refCol,refCol)<0.001) refCol=fakeRefl; if(dot(refrCol,refrCol)<0.001) refrCol=fakeRefr;',
+        ' float fres=pow(1.0-max(dot(N,V),0.0),3.0); float F=0.06+0.94*fres;',
+        ' vec3 env=mix(refrCol,refCol,F); vec3 H=normalize(V+L);',
+        ' float NdotL=max(dot(N,L),0.0); float spec=pow(max(dot(N,H),0.0),120.0);',
+        ' float horizon=abs(N.y); float band=smoothstep(0.18,0.05,horizon);',
+        ' vec3 col=mix(baseColor.rgb,env,0.85); col*=(0.85+0.15*NdotL); col=mix(col*0.55,col,1.0-band*0.5); col+=spec*vec3(1.25);',
+        ' gl_FragColor=vec4(pow(col,vec3(0.95)), baseColor.a); }'
+      ].join('\n')
   );
 
   // falling droplet: photoreal shading (ASCII only)
   // 1번 코드. 물방울이 잘보임!!
   this.fallingDropletShader = new GL.Shader(
-    // vertex
-    'varying vec3 vN; varying vec3 vE;' +
-    'void main(){' +
-    '  vN = normalize(gl_NormalMatrix * gl_Normal);' +
-    '  vec4 ep = gl_ModelViewMatrix * gl_Vertex;' +
-    '  vE = ep.xyz;' +
-    '  gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;' +
-    '}',
+      // vertex
+      'varying vec3 vN; varying vec3 vE;' +
+      'void main(){' +
+      '  vN = normalize(gl_NormalMatrix * gl_Normal);' +
+      '  vec4 ep = gl_ModelViewMatrix * gl_Vertex;' +
+      '  vE = ep.xyz;' +
+      '  gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;' +
+      '}',
 
-    // fragment
-    'precision highp float;' +
-    'varying vec3 vN; varying vec3 vE;' +
-    'uniform samplerCube sky;' +
-    'uniform vec3 lightDir;' +
-    'uniform float height;' +
-    'uniform vec4 baseColor;' +
-    'const float IOR = 1.333;' +
-    'void main(){' +
-    '  vec3 N = normalize(vN);' +
-    '  vec3 V = normalize(-vE);' +
-    '  vec3 L = normalize(-lightDir);' +
-    '  vec3 R = reflect(-V, N);' +
-    '  vec3 T = refract(-V, N, 1.0/IOR);' +
-    '  vec3 refCol  = textureCube(sky, R).rgb;' +
-    '  vec3 refrCol = textureCube(sky, T).rgb;' +
-    '  if (dot(refCol,refCol)<1e-6) refCol = vec3(0.80,0.90,1.00);' +
-    '  if (dot(refrCol,refrCol)<1e-6) refrCol = refCol;' +
-    '  float c = clamp(dot(N,V), 0.0, 1.0);' +
-    '  float fres = pow(1.0 - c, 5.0);' +
-    '  float topAmt = smoothstep(0.0, 0.9, N.y);' +
-    '  vec3 waterTint = mix(baseColor.rgb, vec3(0.92,0.97,1.00), 0.75);' +
-    '  vec3 baseMix   = mix(refrCol, waterTint, 0.18 + 0.20*topAmt);' +
-    '  vec3 col       = mix(baseMix, refCol, fres * 0.55);' +
-    '  vec3 H = normalize(V + L);' +
-    '  float spec = pow(max(dot(N,H), 0.0), 180.0);' +
-    '  col += vec3(1.0,0.98,0.95) * spec * 1.05;' +
-    '  float rim = pow(1.0 - c, 2.0);' +
-    '  col *= (1.0 - 0.38 * rim);' +
-    '  float upL = smoothstep(-1.0, -0.2, -N.y);' +
-    '  upL *= exp(-height * 8.5);' +
-    '  col += vec3(1.0) * upL * 0.50;' +
-    '  float fwd = pow(max(dot(N, -L), 0.0), 2.0);' +
-    '  col += vec3(0.12, 0.15, 0.18) * fwd * 0.25;' +
-    '  float absorb = clamp(0.05 + 0.15 * exp(-height * 6.0), 0.05, 0.20);' +
-    '  col *= (1.0 - absorb);' +
-    '  gl_FragColor = vec4(pow(col, vec3(0.95)), 0.62);' +
-    '}'
+      // fragment
+      'precision highp float;' +
+      'varying vec3 vN; varying vec3 vE;' +
+      'uniform samplerCube sky;' +
+      'uniform vec3 lightDir;' +
+      'uniform float height;' +
+      'uniform vec4 baseColor;' +
+      'const float IOR = 1.333;' +
+      'void main(){' +
+      '  vec3 N = normalize(vN);' +
+      '  vec3 V = normalize(-vE);' +
+      '  vec3 L = normalize(-lightDir);' +
+      '  vec3 R = reflect(-V, N);' +
+      '  vec3 T = refract(-V, N, 1.0/IOR);' +
+      '  vec3 refCol  = textureCube(sky, R).rgb;' +
+      '  vec3 refrCol = textureCube(sky, T).rgb;' +
+      '  if (dot(refCol,refCol)<1e-6) refCol = vec3(0.80,0.90,1.00);' +
+      '  if (dot(refrCol,refrCol)<1e-6) refrCol = refCol;' +
+      '  float c = clamp(dot(N,V), 0.0, 1.0);' +
+      '  float fres = pow(1.0 - c, 5.0);' +
+      '  float topAmt = smoothstep(0.0, 0.9, N.y);' +
+      '  vec3 waterTint = mix(baseColor.rgb, vec3(0.92,0.97,1.00), 0.75);' +
+      '  vec3 baseMix   = mix(refrCol, waterTint, 0.18 + 0.20*topAmt);' +
+      '  vec3 col       = mix(baseMix, refCol, fres * 0.55);' +
+      'col = mix(col, baseColor.rgb, 0.6);'+
+      '  vec3 H = normalize(V + L);' +
+      '  float spec = pow(max(dot(N,H), 0.0), 180.0);' +
+      '  col += vec3(1.0,0.98,0.95) * spec * 1.05;' +
+      '  float rim = pow(1.0 - c, 2.0);' +
+      '  col *= (1.0 - 0.38 * rim);' +
+      '  float upL = smoothstep(-1.0, -0.2, -N.y);' +
+      '  upL *= exp(-height * 8.5);' +
+      '  col += vec3(1.0) * upL * 0.50;' +
+      '  float fwd = pow(max(dot(N, -L), 0.0), 2.0);' +
+      '  col += vec3(0.12, 0.15, 0.18) * fwd * 0.25;' +
+      '  float absorb = clamp(0.05 + 0.15 * exp(-height * 6.0), 0.05, 0.20);' +
+      '  col *= (1.0 - absorb);' +
+      '  gl_FragColor = vec4(pow(col, vec3(0.95)), 0.62);' +
+      '}'
   );
 
 }
@@ -326,7 +360,7 @@ Renderer.prototype.renderDroplets = function (droplets, sky) {
         sky: 0,
         lightDir: this.lightDir,
         height: Math.max(d.position.y, 0.0),
-        baseColor: (window.currentDropColor || [0.9, 0.97, 1.0, 0.0])
+        baseColor: [...(window.currentDropColor || [0.9, 0.97, 1.0]), 1.0]
       }).draw(this.dropletMeshSpout);
     }
     gl.popMatrix();
@@ -454,6 +488,8 @@ var water, cubemap, renderer;
 var angleX=-25, angleY=-200.5;
 var paused=false, randomEnabled=false;
 var droplets=[], tipDrops=[], sequences=[], splashQueue=[];
+let currentEmotion = "CALM";  // 기본값
+let currentDropColor = EMOTION_COLORS[currentEmotion];
 
 window.onload = function(){
   var ratio = window.devicePixelRatio || 1;
@@ -474,6 +510,35 @@ window.onload = function(){
 
   water = new Water();
   renderer = new Renderer();
+  document.addEventListener('click', function(e) {
+    const rect = gl.canvas.getBoundingClientRect();
+
+    // [-1, 1] 좌표로 변환 (WebGL 좌표계)
+    const x = (e.clientX - rect.left) / rect.width * 2.0 - 1.0;
+    const y = 1.0 - (e.clientY - rect.top) / rect.height * 2.0;
+
+    // 랜덤 색상 생성 (물방울 색)
+    const color = [Math.random(), Math.random(), Math.random()];
+
+    // 반지름 (색 확산 범위)
+    const radius = 0.15;
+
+    // ✅ Water 클래스에 색상 추가
+    water.addColor(x, y, color, radius);
+  });
+  const buttons = document.querySelectorAll("#emotion-buttons button");
+  buttons.forEach(btn => {
+    btn.addEventListener("click", () => {
+      currentEmotion = btn.dataset.emotion;
+      currentDropColor = EMOTION_COLORS[currentEmotion];
+      buttons.forEach(b => b.style.opacity = "0.5");
+      btn.style.opacity = "1";
+      window.currentDropColor = currentDropColor;
+      console.log("현재 감정:", currentEmotion, "색상:", currentDropColor);
+    });
+  });
+  window.currentDropColor = currentDropColor;
+  renderer.cubemap = cubemap;
   cubemap = new Cubemap({
     xneg: document.getElementById('xneg'),
     xpos: document.getElementById('xpos'),

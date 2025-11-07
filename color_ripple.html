@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>Color Ripple Minimal Demo</title>
+  <style>
+    body { margin:0; overflow:hidden; background:#000; }
+    canvas { display:block; width:100vw; height:100vh; }
+  </style>
+</head>
+<body>
+<canvas id="glcanvas"></canvas>
+
+<script>
+  const vertexShaderSrc = `
+attribute vec2 position;
+varying vec2 vUv;
+void main() {
+  vUv = position * 0.5 + 0.5;
+  gl_Position = vec4(position, 0.0, 1.0);
+}
+`;
+
+  const fragmentShaderSrc = `
+precision highp float;
+uniform vec2 uCenter;
+uniform vec3 uColor;
+uniform float uTime;
+varying vec2 vUv;
+
+void main() {
+  // 거리 계산 (클릭 위치 기준)
+  float dist = distance(vUv, uCenter);
+
+  // 시간 경과에 따라 퍼지고 희미해지는 파동
+  float wave = exp(-10.0 * dist * dist) * exp(-uTime * 1.5);
+
+  // 은은하게 퍼지는 색상
+  vec3 color = uColor * wave;
+
+  gl_FragColor = vec4(color, 1.0);
+}
+`;
+
+  function createShader(gl, type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+    }
+    return shader;
+  }
+
+  function createProgram(gl, vsSource, fsSource) {
+    const vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+    const fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      console.error('Program link error:', gl.getProgramInfoLog(prog));
+    }
+    return prog;
+  }
+
+  const canvas = document.getElementById('glcanvas');
+  const gl = canvas.getContext('webgl');
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+  gl.viewport(0,0,canvas.width,canvas.height);
+
+  const program = createProgram(gl, vertexShaderSrc, fragmentShaderSrc);
+  gl.useProgram(program);
+
+  // 화면 정사각형 좌표
+  const vertices = new Float32Array([
+    -1, -1, 1, -1, -1, 1,
+    1, -1, 1, 1, -1, 1
+  ]);
+
+  const posBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+  const posLoc = gl.getAttribLocation(program, 'position');
+  gl.enableVertexAttribArray(posLoc);
+  gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+  // uniform locations
+  const uCenterLoc = gl.getUniformLocation(program, 'uCenter');
+  const uColorLoc = gl.getUniformLocation(program, 'uColor');
+  const uTimeLoc = gl.getUniformLocation(program, 'uTime');
+
+  // 현재 클릭 상태 저장
+  let current = null;
+  let startTime = 0;
+
+  // 클릭 시 색상 선택 (감정 버튼처럼)
+  canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = 1.0 - (e.clientY - rect.top) / rect.height;
+
+    // 무작위 색상 (나중에 감정 버튼 색으로 교체 가능)
+    const color = [
+      Math.random() * 0.8 + 0.2,
+      Math.random() * 0.8 + 0.2,
+      Math.random() * 0.8 + 0.2
+    ];
+
+    current = { x, y, color };
+    startTime = performance.now();
+  });
+
+  function render() {
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    if (current) {
+      const elapsed = (performance.now() - startTime) / 1000.0;
+      gl.uniform2f(uCenterLoc, current.x, current.y);
+      gl.uniform3f(uColorLoc, current.color[0], current.color[1], current.color[2]);
+      gl.uniform1f(uTimeLoc, elapsed);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      // 2초 후 자동 사라짐
+      if (elapsed > 2.0) current = null;
+    }
+    requestAnimationFrame(render);
+  }
+  render();
+</script>
+</body>
+</html>
