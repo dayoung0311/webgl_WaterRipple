@@ -135,7 +135,7 @@ Water.prototype.updateColorTexture = function() {
       texture: 0,
       center: [-1.0, -1.0],
       color: [0.0, 0.0, 0.0],
-      radius: 0.0001, decay: 0.99,
+      radius: 0.0001, decay: 0.97,
       time: gTime || 0.0
     }).draw(self.plane);
   });
@@ -663,24 +663,25 @@ window.onload = function(){
   }
 
 
-// 새 함수 정의 (spawnDropletAtScreen 위나 아래 어느 쪽에도 가능)
   function dropWater(x, z, emotionKey) {
-    // 1️⃣ 물리적 파동 먼저 생성
     addCrownSplash(water, x, z, 0.05);
 
-    // 2️⃣ 감정 색상 결정 (기본 흰색 fallback)
     const color = EMOTION_COLORS[emotionKey] || [1.0, 1.0, 1.0];
-    const radius = 0.12; // ✅ radius 정의 추가
+    const radius = 0.17; // 확산 범위
+    const steps = 200;    // 몇 번 나눠서 점점 진하게 할지 (30번 = 1초쯤)
+    const delay = 10;    // 각 단계 간격(ms) (30×40=1200ms≈1.2초)
 
-    // 3️⃣ (선택) 경고 로그
-    if (!EMOTION_COLORS[emotionKey]) {
-      console.warn(`⚠️ Unknown emotionKey "${emotionKey}". Using white fallback.`);
+    for (let i = 0; i <= steps; i++) {
+      setTimeout(() => {
+        const t = i / steps; // 0 → 1
+        const fadeColor = [
+          color[0] * t,
+          color[1] * t,
+          color[2] * t
+        ];
+        water.addColor(x, z, fadeColor, radius);
+      }, 475 + i * delay);
     }
-
-    // 4️⃣ 5초 후 색상 추가 (지연 효과)
-    setTimeout(() => {
-      water.addColor(x, z, color, radius);
-    }, 475); // 5000ms = 5초 후 색 등장
   }
 
 
