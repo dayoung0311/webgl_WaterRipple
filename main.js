@@ -69,6 +69,7 @@ Cubemap.prototype.unbind = function(u){ gl.activeTexture(gl.TEXTURE0+(u||0)); gl
 // ----------------------------------------------------------------------------
 function Water() {
   this.plane = GL.Mesh.plane();
+  this.activeColorDrops = [];
   if (!GL.Texture.canUseFloatingPointTextures()) throw new Error('float textures required');
   var filter = GL.Texture.canUseFloatingPointLinearFiltering()? gl.LINEAR: gl.NEAREST;
   this.textureA = new GL.Texture(512,512,{type:gl.FLOAT, filter});
@@ -133,20 +134,21 @@ Water.prototype.addColor = function(x, z, color, radius) {
   });
   this.colorTextureB.swapWith(this.colorTextureA);
 };
-Water.prototype.updateColorTexture = function(elapsed, isActive) {
+Water.prototype.updateColorTexture = function(elapsed, isActive, center, color) {
   const self = this;
   this.colorTextureB.drawTo(function() {
     self.colorTextureA.bind(0);
     self.textureA.bind(1);
-    const center = self.lastDropCenter || [0.5, 0.5];
-    const color = (isActive && self.lastDropColor) ? self.lastDropColor : [0.0, 0.0, 0.0];
-    const timeVal = elapsed !== undefined ? elapsed : 0.0;
+
+    const usedCenter = center || [0.5, 0.5];
+    const usedColor = (isActive && color) ? color : [0.0, 0.0, 0.0];
+    const timeVal = elapsed || 0.0;
 
     self.colorShader.uniforms({
       texture: 0,
       waveTex: 1,
-      center: center,
-      color: color,
+      center: usedCenter,
+      color: usedColor,
       radius: 0.25,
       decay: 0.97,
       time: timeVal
@@ -154,6 +156,7 @@ Water.prototype.updateColorTexture = function(elapsed, isActive) {
   });
   this.colorTextureB.swapWith(this.colorTextureA);
 };
+
 
 
 
@@ -676,11 +679,18 @@ window.onload = function(){
 
       // ✅ [추가] 감정 색상 중심/색상 저장
       const emotionColor = EMOTION_COLORS[emotionKey];
+      const center = [p.x * 0.5 + 0.5, p.z * 0.5 + 0.5];
+
       water.lastDropCenter = [p.x * 0.5 + 0.5, p.z * 0.5 + 0.5]; // 수면 좌표를 [0~1]로 변환
       water.lastDropColor = emotionColor;
 
       // ✅ [추가] 새 감정색 타이머 초기화
       water.lastDropStartTime = gTime;
+      water.activeColorDrops.push({
+        center: center,
+        color: emotionColor,
+        startTime: gTime
+      });
 
       return true;
     }
@@ -753,14 +763,14 @@ window.onload = function(){
   }
 
   // update/draw
-  function update(dt){
-    if(dt>1) return;
+  function update(dt) {
+    if (dt > 1) return;
     gTime += dt;
 
-    if(randomEnabled){
-      if(Math.random()<dt*0.9){
-        var rx=Math.random()*1.8-0.9, rz=Math.random()*1.8-0.9;
-        droplets.push(new Droplet(rx,rz));
+    if (randomEnabled) {
+      if (Math.random() < dt * 0.9) {
+        var rx = Math.random() * 1.8 - 0.9, rz = Math.random() * 1.8 - 0.9;
+        droplets.push(new Droplet(rx, rz));
       }
     }
 
@@ -769,20 +779,25 @@ window.onload = function(){
       d.velocity.y -= 9.8 * dt * 0.35;
       d.position = d.position.add(d.velocity.multiply(dt));
 
-      if (d.wobblePhase === undefined) { d.wobblePhase = 0.0; d.wobbleAmp = 0.10; }
+      if (d.wobblePhase === undefined) {
+        d.wobblePhase = 0.0;
+        d.wobbleAmp = 0.10;
+      }
       var vy = Math.abs(d.velocity.y);
       var aspect = Math.min(1.25, 1.0 + 0.12 * vy);
       d.wobblePhase += dt * 12.0;
-      d.wobbleAmp   *= Math.exp(-dt * 3.0);
+      d.wobbleAmp *= Math.exp(-dt * 3.0);
       var wobble = 1.0 + d.wobbleAmp * Math.sin(d.wobblePhase) * 0.12;
-      var ay  = aspect * wobble;
+      var ay = aspect * wobble;
       var axz = 1.0 / Math.sqrt(aspect) / wobble;
-      d.sx = d.radius * axz; d.sy = d.radius * ay; d.sz = d.radius * axz;
+      d.sx = d.radius * axz;
+      d.sy = d.radius * ay;
+      d.sz = d.radius * axz;
 
       if (d.position.y <= 0.0) {
-        var vyI  = Math.max(0, -d.velocity.y);
+        var vyI = Math.max(0, -d.velocity.y);
         var radI = Math.max(0.015, d.radius);
-        var sI   = vyI * radI;
+        var sI = vyI * radI;
         addCrownSplash(water, d.position.x, d.position.z, 0.07);
         sequences.push(new CrownSequence(d.position.x, d.position.z));
         droplets.splice(k, 1);
@@ -803,25 +818,29 @@ window.onload = function(){
     water.stepSimulation();
     water.stepSimulation();
     water.updateNormals();
-    if (water.lastDropStartTime !== undefined) {
-      const dropElapsed = gTime - water.lastDropStartTime;
+    // 🧠 여러 감정색 드롭 동시에 fade-in/out
+    if (water.activeColorDrops.length > 0) {
+      for (let i = water.activeColorDrops.length - 1; i >= 0; i--) {
+        const drop = water.activeColorDrops[i];
+        const dropElapsed = gTime - drop.startTime;
 
-      // 🕒 지연 시간 (초 단위)
-      const delay = 0.51;  // 0.8초 후 시작 (원하는 시간으로 조정 가능)
+        if (dropElapsed > 5.0) { // 너무 오래된 건 삭제
+          water.activeColorDrops.splice(i, 1);
+          continue;
+        }
 
-      // 🟢 delay 이전에는 색상 완전 0으로 전달
-      const effectiveElapsed = Math.max(0.0, dropElapsed - delay);
-      const isActive = dropElapsed > delay;
+        const delay = 0.5;
+        const effectiveElapsed = Math.max(0.0, dropElapsed - delay);
+        const isActive = dropElapsed > delay;
 
-      water.updateColorTexture(effectiveElapsed, isActive);
+        // ✅ 여러 개 드롭 독립 적용
+        water.updateColorTexture(effectiveElapsed, isActive, drop.center, drop.color);
+      }
+
     }
-
-
-
-    renderer.updateCaustics(water);
   }
 
-  function draw(){
+    function draw(){
     gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     gl.loadIdentity();
     gl.translate(0,0,-2.5);
