@@ -1,7 +1,9 @@
 // ============================================================================
 // WebGL Water — photoreal droplet (3D mesh + water shading)
 // ============================================================================
-
+function get(id) {
+  return document.getElementById(id);
+}
 var gl = GL.create({ alpha: false });
 // 감정 색상 정의 (RGB)
 const EMOTION_COLORS = {
@@ -86,7 +88,11 @@ function Water() {
   this.dropShader   = new GL.Shader('water-vertex','water-drop-fragment');
   this.updateShader = new GL.Shader('water-vertex','water-update-fragment');
   this.normalShader = new GL.Shader('water-vertex','water-normal-fragment');
-  this.colorShader = new GL.Shader('water-vertex', 'water-color-fragment');
+  this.colorShader = new GL.Shader(
+      get("water-color-vertex").textContent,
+      get("water-color-fragment").textContent
+  );
+
 
 }
 Water.prototype.addDrop = function(x,y,r,str){
@@ -127,20 +133,31 @@ Water.prototype.addColor = function(x, z, color, radius) {
   });
   this.colorTextureB.swapWith(this.colorTextureA);
 };
-Water.prototype.updateColorTexture = function() {
+Water.prototype.updateColorTexture = function(elapsed, isActive) {
   const self = this;
   this.colorTextureB.drawTo(function() {
     self.colorTextureA.bind(0);
+    self.textureA.bind(1);
+    const center = self.lastDropCenter || [0.5, 0.5];
+    const color = (isActive && self.lastDropColor) ? self.lastDropColor : [0.0, 0.0, 0.0];
+    const timeVal = elapsed !== undefined ? elapsed : 0.0;
+
     self.colorShader.uniforms({
       texture: 0,
-      center: [-1.0, -1.0],
-      color: [0.0, 0.0, 0.0],
-      radius: 0.0001, decay: 0.97,
-      time: gTime || 0.0
+      waveTex: 1,
+      center: center,
+      color: color,
+      radius: 0.25,
+      decay: 0.97,
+      time: timeVal
     }).draw(self.plane);
   });
   this.colorTextureB.swapWith(this.colorTextureA);
 };
+
+
+
+
 
 
 // ----------------------------------------------------------------------------
@@ -657,10 +674,19 @@ window.onload = function(){
       // ✅ 감정 색상 적용 + 물리 파동 생성
       dropWater(p.x, p.z, emotionKey);
 
+      // ✅ [추가] 감정 색상 중심/색상 저장
+      const emotionColor = EMOTION_COLORS[emotionKey];
+      water.lastDropCenter = [p.x * 0.5 + 0.5, p.z * 0.5 + 0.5]; // 수면 좌표를 [0~1]로 변환
+      water.lastDropColor = emotionColor;
+
+      // ✅ [추가] 새 감정색 타이머 초기화
+      water.lastDropStartTime = gTime;
+
       return true;
     }
     return false;
   }
+
 
 
   function dropWater(x, z, emotionKey) {
@@ -777,6 +803,21 @@ window.onload = function(){
     water.stepSimulation();
     water.stepSimulation();
     water.updateNormals();
+    if (water.lastDropStartTime !== undefined) {
+      const dropElapsed = gTime - water.lastDropStartTime;
+
+      // 🕒 지연 시간 (초 단위)
+      const delay = 0.51;  // 0.8초 후 시작 (원하는 시간으로 조정 가능)
+
+      // 🟢 delay 이전에는 색상 완전 0으로 전달
+      const effectiveElapsed = Math.max(0.0, dropElapsed - delay);
+      const isActive = dropElapsed > delay;
+
+      water.updateColorTexture(effectiveElapsed, isActive);
+    }
+
+
+
     renderer.updateCaustics(water);
   }
 

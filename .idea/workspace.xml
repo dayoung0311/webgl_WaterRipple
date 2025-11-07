@@ -7,6 +7,7 @@
     <list default="true" id="d0847c71-ba55-40e2-a575-ac72e88172c9" name="변경" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main.js" beforeDir="false" afterPath="$PROJECT_DIR$/main.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/webgl-water.html" beforeDir="false" afterPath="$PROJECT_DIR$/webgl-water.html" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -58,7 +59,7 @@
     "RunOnceActivity.git.unshallow": "true",
     "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultAutoModeForALLUsers.v1": "true",
     "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
-    "git-widget-placeholder": "waterdrop-colorchanged-ver2",
+    "git-widget-placeholder": "waterdrop-colorchanged-ver3",
     "junie.onboarding.icon.badge.shown": "true",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
@@ -99,7 +100,7 @@
       <workItem from="1762227574654" duration="50000" />
       <workItem from="1762227836280" duration="470000" />
       <workItem from="1762232184171" duration="3723000" />
-      <workItem from="1762477420311" duration="31402000" />
+      <workItem from="1762477420311" duration="37403000" />
     </task>
     <servers />
   </component>

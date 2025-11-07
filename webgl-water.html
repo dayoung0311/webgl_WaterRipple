@@ -365,36 +365,58 @@
     }
     img { display:none; }
   </style>
+  <script id="water-color-vertex" type="x-shader/x-vertex">
+    varying vec2 coord;
+    void main() {
+      coord = gl_Vertex.xy * 0.5 + 0.5;
+      gl_Position = vec4(gl_Vertex.xyz, 1.0);
+    }
+  </script>
   <script id="water-color-fragment" type="x-shader/x-fragment">
     precision highp float;
 
-    uniform sampler2D texture;
-    uniform vec2 center;
-    uniform vec3 color;
-    uniform float radius;
-    uniform float decay;
-    uniform float time;  // ✅ time 추가 (JS에서 전달되는 uniform)
-
+    uniform sampler2D texture;   // 감정색 텍스처
+    uniform sampler2D waveTex;   // 파동 텍스처
+    uniform vec2 center;         // 클릭 중심 (0~1)
+    uniform vec3 color;          // 감정색 (RGB)
+    uniform float radius;        // 색 확산 반경
+    uniform float decay;         // 감쇠율
+    uniform float time;          // 시간
     varying vec2 coord;
 
-    // ✅ 간단한 노이즈 함수 (무조건 안정적으로 작동)
-    float noise(vec2 p) {
-      return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453);
-    }
-
     void main() {
-      vec4 base = texture2D(texture, coord);
-      vec3 faded = base.rgb * decay;
+        vec4 prev = texture2D(texture, coord);
+        float wave = texture2D(waveTex, coord).r;
+float fadeIn = smoothstep(0.0, 1.2, time);      //  점점 밝아짐
+float fadeOut = exp(-max(0.0, time - 2.1) * 1.2); // 서서히 사라짐
+float fade = fadeIn * fadeOut;
 
-      // 거리 기반 + 노이즈 섞기
-      float d = distance(coord, center);
-      float n = noise(coord * 25.0 + time * 0.3) * 0.3;  // 노이즈 세기
-      float blend = smoothstep(radius, 0.0, d + n);
 
-      vec3 result = mix(faded, color, blend);
-      gl_FragColor = vec4(result, 1.0);
+
+        // ✅ 중심 거리 기반 감쇠
+        float dist = distance(coord, center);
+        float distMask = 1.0 - smoothstep(radius * 0.1, radius, dist);
+
+        // ✅ 파동이 있는 영역만 선택 (wave 진폭 0.02 이상)
+        float waveMask = smoothstep(0.01, 0.18, abs(wave - 0.5));
+
+        // ✅ 결합 마스크: 거리 + 파동 + fade
+        float mask = distMask * waveMask * fade;
+
+        // ✅ 감정색을 기존 색과 자연스럽게 블렌딩
+        vec3 mixed = mix(prev.rgb * decay, prev.rgb + color * mask * 0.04, mask);
+
+        gl_FragColor = vec4(mixed, 1.0);
     }
+
+
   </script>
+
+
+
+
+
+
 
 </head>
 <body>
